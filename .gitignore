@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+audit_logs/*.jsonl
+!audit_logs/.gitkeep
+credentials.json
+token.json
+.DS_Store
