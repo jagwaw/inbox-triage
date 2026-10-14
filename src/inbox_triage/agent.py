@@ -44,7 +44,10 @@ class TriageAgent:
     audit: AuditLogger
 
     def _fetch_node(self, state: AgentState) -> AgentState:
-        emails = self.gmail.fetch_unread(max_results=self.settings.max_emails_per_run)
+        emails = self.gmail.fetch_unread(
+            max_results=self.settings.max_emails_per_run,
+            query=self.settings.gmail_query,
+        )
         return {"emails": emails, "results": []}
 
     def _process_node(self, state: AgentState) -> AgentState:

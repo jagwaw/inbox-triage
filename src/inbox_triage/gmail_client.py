@@ -86,14 +86,16 @@ class GmailClient:
             self._service = build("gmail", "v1", credentials=creds)
         return self._service
 
-    def fetch_unread(self, max_results: int) -> list[EmailMessage]:
+    def fetch_unread(self, max_results: int, query: str | None = None) -> list[EmailMessage]:
         service = self._get_service()
-        resp = (
-            service.users()
-            .messages()
-            .list(userId="me", labelIds=["INBOX", "UNREAD"], maxResults=max_results)
-            .execute()
-        )
+        list_args: dict[str, Any] = {
+            "userId": "me",
+            "labelIds": ["INBOX", "UNREAD"],
+            "maxResults": max_results,
+        }
+        if query:
+            list_args["q"] = query
+        resp = service.users().messages().list(**list_args).execute()
         message_refs = resp.get("messages", [])
 
         messages: list[EmailMessage] = []

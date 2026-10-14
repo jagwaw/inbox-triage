@@ -85,3 +85,14 @@ class TestTriageAgentProcessOne:
         assert result["error"] == "API down"
         assert result["classification"] is None
         gmail.create_draft_reply.assert_not_called()
+
+
+class TestTriageAgentFetch:
+    def test_fetch_uses_configured_gmail_query(self, tmp_path):
+        settings = MagicMock(max_emails_per_run=10, gmail_query="label:triage-test")
+        agent, gmail, llm = make_agent(tmp_path, settings=settings)
+        gmail.fetch_unread.return_value = []
+
+        agent._fetch_node({"emails": [], "results": []})
+
+        gmail.fetch_unread.assert_called_once_with(max_results=10, query="label:triage-test")

@@ -117,7 +117,10 @@ class LLMClient:
     def _classify_openai(self, user_content: str) -> TriageClassification:
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.settings.openai_api_key)
+        client = OpenAI(
+            api_key=self.settings.openai_api_key,
+            base_url=self.settings.openai_base_url,
+        )
         response = client.beta.chat.completions.parse(
             model=self.settings.llm_model,
             messages=[

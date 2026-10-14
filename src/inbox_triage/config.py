@@ -51,6 +51,14 @@ class Settings:
     max_emails_per_run: int
     require_human_approval: bool
     audit_log_dir: Path
+    # Optional: point the "openai" provider at any OpenAI-compatible API
+    # (Gemini, Groq, OpenRouter, a local Ollama server, ...).
+    openai_base_url: str | None = None
+    # Optional Gmail search filter (same syntax as the Gmail search box),
+    # e.g. 'subject:"Invoice request"'. Limits which unread mail is read.
+    gmail_query: str | None = None
+    # Name the agent signs drafts with. If unset, drafts end with [Your Name].
+    sender_name: str | None = None
 
     def validate(self) -> None:
         if self.llm_provider not in {"anthropic", "openai"}:
@@ -87,6 +95,9 @@ def load_settings() -> Settings:
         max_emails_per_run=_env_int("MAX_EMAILS_PER_RUN", 25),
         require_human_approval=_env_bool("REQUIRE_HUMAN_APPROVAL", True),
         audit_log_dir=Path(os.getenv("AUDIT_LOG_DIR", "audit_logs")),
+        openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
+        gmail_query=os.getenv("GMAIL_QUERY") or None,
+        sender_name=os.getenv("SENDER_NAME") or None,
     )
     settings.validate()
     return settings
