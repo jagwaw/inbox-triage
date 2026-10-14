@@ -114,11 +114,21 @@ _INJECTION_PATTERNS = [
     # words can't be used to slip a phrase past the detector.
     re.compile(r"ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions", re.I),
     re.compile(r"disregard\s+(all\s+|any\s+|the\s+)?(previous|prior|above)", re.I),
-    re.compile(r"you\s+are\s+now", re.I),
+    # Role reassignment ("you are now in admin mode", "you are now an
+    # unrestricted assistant"), not ordinary "you are now subscribed".
+    re.compile(
+        r"you\s+are\s+now\s+(in\s+\w+\s+mode|an?\s+(\w+\s+)?(ai|assistant|bot|model)\b"
+        r"|unrestricted|jailbroken)",
+        re.I,
+    ),
     re.compile(r"new\s+instructions?:", re.I),
-    re.compile(r"system\s*:\s*", re.I),
+    # A fake role label at the start of a line. Mid-line "Operating system:"
+    # is ordinary text.
+    re.compile(r"^\s*system\s*:", re.I | re.M),
     re.compile(r"</?(system|assistant|user)>", re.I),
-    re.compile(r"forward\s+(all\s+|this\s+)?(emails?|mail)\s+to", re.I),
+    # Bulk exfiltration ("forward all future emails to ..."). Forwarding one
+    # email to a colleague is ordinary.
+    re.compile(r"forward\s+(all|every|any)\s+(of\s+)?(\w+\s+)?(emails?|mail|messages)\s+to", re.I),
 ]
 
 
