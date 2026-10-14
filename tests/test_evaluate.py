@@ -112,7 +112,7 @@ class TestRunEval:
     def test_benign_email_flagged_by_screen_is_a_false_positive_and_loses_its_draft(self, tmp_path):
         case = EvalCase(
             id="fp", sender="x", subject="A",
-            body="Operating system: macOS. Is this a known bug?",
+            body="Status report\nSystem: degraded since 09:00. Is this a known bug?",
             expected_category="needs_reply",
         )
         results = run([case], {"A": classification("needs_reply", reply="Looking into it.")}, tmp_path)
@@ -141,6 +141,16 @@ class TestRunEval:
 
         assert sleeps == [2, 2]
 
+    def test_stops_after_consecutive_errors(self, tmp_path):
+        cases = [
+            EvalCase(id=str(i), sender="x", subject=str(i), body="hi", expected_category="fyi_only")
+            for i in range(5)
+        ]
+        answers = {"0": classification("fyi_only"), **{str(i): RuntimeError("429 quota") for i in range(1, 5)}}
+        results = run(cases, answers, tmp_path, max_consecutive_errors=2)
+
+        assert [r.case.id for r in results] == ["0", "1", "2"]
+
     def test_counts_drafts_that_mention_an_attachment(self, tmp_path):
         case = EvalCase(id="s", sender="x", subject="A", body="Send slides?", expected_category="needs_reply")
         results = run([case], {"A": classification("needs_reply", reply="I've attached the slides.")}, tmp_path)
@@ -155,8 +165,31 @@ def test_report_contains_headline_numbers_and_attack_table(tmp_path):
                  attack=True, canary="CANARY-3"),
     ]
     results = run(cases, {"A": classification("fyi_only"), "B": classification("spam_or_irrelevant")}, tmp_path)
-    report = render_markdown(results, summarize(results), {"Model": "fake-model"})
+    report = render_markdown([results], {"Model": "fake-model"})
 
     assert "fake-model" in report
     assert "| Category accuracy, normal emails (errors count as wrong) | 1/1 (100%) |" in report
-    assert "| `atk` | yes | spam_or_irrelevant | no | no | no |" in report
+    assert "| `atk` | original | yes | 0/1 | 0/1 | 0/1 |" in report
+
+
+def test_report_shows_each_run_and_splits_holdout_cases(tmp_path):
+    cases = [
+        EvalCase(id="o", sender="x", subject="A", body="hi", expected_category="fyi_only"),
+        EvalCase(id="h", sender="x", subject="B", body="hi", expected_category="fyi_only", split="holdout"),
+    ]
+    run1 = run(cases, {"A": classification("fyi_only"), "B": classification("fyi_only")}, tmp_path)
+    run2 = run(cases, {"A": classification("fyi_only"), "B": classification("action_item")}, tmp_path)
+    report = render_markdown([run1, run2], {})
+
+    assert "| Metric | Run 1 | Run 2 |" in report
+    assert "| Category accuracy, normal emails (errors count as wrong) | 2/2 (100%) | 1/2 (50%) |" in report
+    holdout = report[report.index("## Holdout cases only"):]
+    assert "| Category accuracy, normal emails (errors count as wrong) | 1/1 (100%) | 0/1 (0%) |" in holdout
+    assert "`h` (holdout): labelled fyi_only, wrong in 1/2 runs, got action_item (1x)" in report
+
+
+def test_rejects_unknown_split(tmp_path):
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"id": "x", "sender": "a", "subject": "s", "body": "b", "expected_category": "fyi_only", "split": "test"}\n')
+    with pytest.raises(ValueError, match="invalid split"):
+        load_dataset(bad)
