@@ -110,13 +110,15 @@ class AuditLogger:
 # --- Prompt-injection defense -------------------------------------------------
 
 _INJECTION_PATTERNS = [
-    re.compile(r"ignore (all |any |the )?(previous|prior|above) instructions", re.I),
-    re.compile(r"disregard (all |any |the )?(previous|prior|above)", re.I),
-    re.compile(r"you are now", re.I),
-    re.compile(r"new instructions?:", re.I),
+    # \s+ (not a literal space) so a line break or extra spaces between
+    # words can't be used to slip a phrase past the detector.
+    re.compile(r"ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions", re.I),
+    re.compile(r"disregard\s+(all\s+|any\s+|the\s+)?(previous|prior|above)", re.I),
+    re.compile(r"you\s+are\s+now", re.I),
+    re.compile(r"new\s+instructions?:", re.I),
     re.compile(r"system\s*:\s*", re.I),
     re.compile(r"</?(system|assistant|user)>", re.I),
-    re.compile(r"forward (all |this )?(emails?|mail) to", re.I),
+    re.compile(r"forward\s+(all\s+|this\s+)?(emails?|mail)\s+to", re.I),
 ]
 
 
