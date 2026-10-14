@@ -13,10 +13,28 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import Settings
 from .guardrails import RateLimiter
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Retry only errors that can succeed on a second try (rate limits,
+    timeouts, connection drops, 5xx). A 400/401/404 will fail the same way
+    every time, so retrying just burns time and hides the real message."""
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return status in (408, 409, 429) or status >= 500
+    return type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
+
+
+_RETRY = dict(
+    retry=retry_if_exception(_is_transient),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=20),
+    reraise=True,
+)
 
 
 class TriageClassification(BaseModel):
@@ -69,7 +87,7 @@ class LLMClient:
             return self._classify_anthropic(user_content)
         return self._classify_openai(user_content)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=20))
+    @retry(**_RETRY)
     def _classify_anthropic(self, user_content: str) -> TriageClassification:
         import anthropic
 
@@ -95,7 +113,7 @@ class LLMClient:
                 return TriageClassification.model_validate(block.input)
         raise RuntimeError("Model did not return a tool_use classification block.")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=20))
+    @retry(**_RETRY)
     def _classify_openai(self, user_content: str) -> TriageClassification:
         from openai import OpenAI
 
