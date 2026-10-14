@@ -13,3 +13,6 @@ token.json
 
 # Private notes (never commit)
 *.local.md
+
+# Local Claude Code working notes (not published)
+CLAUDE.md
