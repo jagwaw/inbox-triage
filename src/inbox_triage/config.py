@@ -78,7 +78,7 @@ class Settings:
 def load_settings() -> Settings:
     settings = Settings(
         llm_provider=os.getenv("LLM_PROVIDER", "anthropic"),
-        llm_model=os.getenv("LLM_MODEL", "claude-sonnet-4-5-20250929"),
+        llm_model=os.getenv("LLM_MODEL", "claude-sonnet-5"),
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
         gmail_credentials_path=Path(os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json")),
