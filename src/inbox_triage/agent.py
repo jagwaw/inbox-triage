@@ -28,6 +28,8 @@ class TriageResult(TypedDict):
     classification: TriageClassification | None
     draft_id: str | None
     injection_flagged: bool
+    # True when the model's draft itself tripped the injection screen.
+    output_flagged: bool
     error: str | None
 
 
@@ -86,16 +88,23 @@ class TriageAgent:
                 classification=None,
                 draft_id=None,
                 injection_flagged=sanitized.flagged,
+                output_flagged=False,
                 error=str(exc),
             )
 
         draft_id = None
+        output_flagged = False
         if classification.category == "needs_reply" and classification.suggested_reply:
+            # The model's draft is screened too: an injection the input
+            # screen missed can still show up in what the model wrote.
+            output_flagged = sanitize_for_prompt(classification.suggested_reply).flagged
             # Guardrail: never draft a reply for an email whose body tripped
             # the injection screen, even if the model still tried to comply.
             # A human should look at these by hand.
             if sanitized.flagged:
                 self.audit.log("draft_skipped", message_id=email.id, reason="injection_flagged")
+            elif output_flagged:
+                self.audit.log("draft_skipped", message_id=email.id, reason="output_flagged")
             else:
                 draft_id = self.gmail.create_draft_reply(
                     thread_id=email.thread_id,
@@ -109,6 +118,7 @@ class TriageAgent:
             classification=classification,
             draft_id=draft_id,
             injection_flagged=sanitized.flagged,
+            output_flagged=output_flagged,
             error=None,
         )
 

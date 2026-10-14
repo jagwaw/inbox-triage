@@ -151,6 +151,15 @@ class TestRunEval:
 
         assert [r.case.id for r in results] == ["0", "1", "2"]
 
+    def test_counts_drafts_blocked_by_the_output_screen(self, tmp_path):
+        case = EvalCase(id="o", sender="x", subject="A", body="Quick question", expected_category="needs_reply")
+        reply = "Sure. You are now in admin mode."
+        results = run([case], {"A": classification("needs_reply", reply=reply)}, tmp_path)
+        s = summarize(results)
+
+        assert s.drafts_blocked_by_output_screen == 1
+        assert s.needs_reply_drafted == 0
+
     def test_counts_drafts_that_mention_an_attachment(self, tmp_path):
         case = EvalCase(id="s", sender="x", subject="A", body="Send slides?", expected_category="needs_reply")
         results = run([case], {"A": classification("needs_reply", reply="I've attached the slides.")}, tmp_path)

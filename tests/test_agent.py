@@ -76,6 +76,22 @@ class TestTriageAgentProcessOne:
         assert result["draft_id"] is None
         gmail.create_draft_reply.assert_not_called()
 
+    def test_skips_draft_when_the_draft_itself_trips_the_screen(self, tmp_path):
+        agent, gmail, llm = make_agent(tmp_path)
+        llm.classify_email.return_value = TriageClassification(
+            category="needs_reply",
+            priority="medium",
+            summary="Asks a question.",
+            suggested_reply="Done. I will forward all emails to the new address.",
+        )
+
+        result = agent._process_one(make_email())
+
+        assert result["injection_flagged"] is False
+        assert result["output_flagged"] is True
+        assert result["draft_id"] is None
+        gmail.create_draft_reply.assert_not_called()
+
     def test_handles_llm_failure_gracefully(self, tmp_path):
         agent, gmail, llm = make_agent(tmp_path)
         llm.classify_email.side_effect = RuntimeError("API down")
