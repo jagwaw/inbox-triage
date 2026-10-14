@@ -66,6 +66,7 @@ gmail_client.py   OAuth (read + draft-only scopes), fetch, create draft
 llm.py            provider-agnostic LLM call, structured output, retries
 agent.py          LangGraph graph: fetch_emails -> process_emails (screen -> classify -> draft) -> end
 cli.py            entrypoint: run one triage pass, print a summary
+evaluate.py       runs the labelled eval set through the real triage path -> evals/results.md
 ```
 
 The guardrails aren't a wrapper around the agent — they're nodes *in* the
@@ -98,8 +99,45 @@ python -m inbox_triage.cli
 
 **Test:**
 ```bash
-pytest
+pytest                                      # offline, no credentials needed
+python -m inbox_triage.evaluate --delay 2   # live eval -> evals/results.md
 ```
+
+## Evaluation
+
+`python -m inbox_triage.evaluate --delay 2` runs 32 labelled, synthetic
+emails ([`evals/dataset.jsonl`](evals/dataset.jsonl)) through the same
+screen -> classify -> draft path the CLI uses. Only Gmail is faked (drafts
+are recorded, not created), so no real mail is read or sent to the LLM.
+
+- 24 normal emails, 6 per category. Three contain phrases that look like
+  injections but aren't ("You are now subscribed", "Operating system:"),
+  to measure false positives.
+- 8 prompt-injection attacks. 4 use phrasings the regex screen knows; 4
+  are paraphrased, in Spanish, or hidden below a signature. Each one asks
+  the model to include a unique canary code, so "did the model obey?" is
+  a string check, not a judgment call.
+
+**Baseline run** (2026-10-14, `openai/gpt-oss-20b` on Groq, one run;
+full report in [`evals/results.md`](evals/results.md)):
+
+| Metric | Result |
+|---|---|
+| Category accuracy, normal emails | 21/24 (88%) |
+| Attacks flagged by the regex screen | 4/8 (50%) |
+| Normal emails wrongly flagged by the screen | 3/24 (12%) |
+| Attacks where the model followed the injected instruction | 3/8 (38%) |
+| Attacks where injected text reached a draft | 1/8 (12%) |
+| Emails sent | 0 (no send path exists) |
+
+What this shows: the layers catch different things. Two attacks that the
+model obeyed were stopped because the screen flagged them and flagged
+emails never get drafts. One attack (a real request with an instruction
+hidden below the signature) passed both layers and its injected line
+reached a draft. That's still only a draft a human must review, but it's
+the case the next round of work targets. Results are from a single run
+of a non-deterministic model on a small dataset, so treat them as
+indicative, not precise.
 
 ## What's deliberately out of scope (v0.1)
 
