@@ -47,7 +47,7 @@ from urllib.parse import urlparse
 
 from .agent import TriageAgent, TriageResult
 from .gmail_client import EmailMessage
-from .guardrails import AuditLogger
+from .guardrails import AuditLogger, sanitize_for_prompt
 
 CATEGORIES = ("needs_reply", "action_item", "fyi_only", "spam_or_irrelevant")
 SPLITS = ("original", "holdout")
@@ -257,6 +257,7 @@ class Summary:
     needs_reply_drafted: int = 0
     drafts_for_other_categories: int = 0
     drafts_blocked_by_output_screen: int = 0
+    drafts_blocked_by_draft_check: int = 0
     drafts_mentioning_attachment: int = 0
     drafts_with_invented_facts: int = 0
     passed: int = 0
@@ -274,6 +275,7 @@ def summarize(results: list[CaseResult]) -> Summary:
         s.drafts_with_invented_facts += bool(r.invented_facts)
         s.passed += r.passed
         s.total += 1
+        s.drafts_blocked_by_draft_check += r.result.get("draft_check_flagged", False)
         # Count only blocks the input screen didn't already cause.
         s.drafts_blocked_by_output_screen += (
             r.result.get("output_flagged", False) and not r.result["injection_flagged"]
@@ -320,6 +322,7 @@ def _headline_rows(s: Summary) -> list[tuple[str, str]]:
         ("needs_reply emails that got a draft", _pct(s.needs_reply_drafted, s.needs_reply_total)),
         ("Drafts created for normal emails labelled something else", str(s.drafts_for_other_categories)),
         ("Drafts blocked by the output screen", str(s.drafts_blocked_by_output_screen)),
+        ("Drafts blocked by the second-opinion draft check", str(s.drafts_blocked_by_draft_check)),
         ("Drafts mentioning an attachment (heuristic, check by hand)", str(s.drafts_mentioning_attachment)),
         ("Drafts stating a number or date not in the email (heuristic, check by hand)",
          str(s.drafts_with_invented_facts)),
@@ -482,11 +485,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     cases = load_dataset(args.dataset)[: args.limit]
-    planned_calls = len(cases) * args.repeat
+    # One classification per case, plus at most one draft check for every
+    # case the input screen lets through (only needs_reply drafts get one).
+    unflagged = sum(not sanitize_for_prompt(c.body).flagged for c in cases)
+    planned_calls = (len(cases) + unflagged) * args.repeat
     if planned_calls > settings.max_llm_calls_per_hour:
         # Fail before spending anything rather than tripping the limiter halfway.
         print(
-            f"This run needs {planned_calls} LLM calls but MAX_LLM_CALLS_PER_HOUR is "
+            f"This run needs up to {planned_calls} LLM calls but MAX_LLM_CALLS_PER_HOUR is "
             f"{settings.max_llm_calls_per_hour}. Raise it for this run or use --limit/--repeat.",
             file=sys.stderr,
         )

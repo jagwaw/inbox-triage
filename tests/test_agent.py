@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 from inbox_triage.agent import TriageAgent
 from inbox_triage.gmail_client import EmailMessage
 from inbox_triage.guardrails import AuditLogger
-from inbox_triage.llm import TriageClassification
+from inbox_triage.llm import DraftCheck, TriageClassification
 
 
 def make_email(**overrides) -> EmailMessage:
@@ -22,6 +22,7 @@ def make_email(**overrides) -> EmailMessage:
 def make_agent(tmp_path, settings=None):
     gmail = MagicMock()
     llm = MagicMock()
+    llm.check_draft.return_value = DraftCheck(injected=False)
     audit = AuditLogger(log_dir=tmp_path)
     settings = settings or MagicMock(max_emails_per_run=25)
     return TriageAgent(settings=settings, gmail=gmail, llm=llm, audit=audit), gmail, llm
@@ -90,6 +91,35 @@ class TestTriageAgentProcessOne:
         assert result["injection_flagged"] is False
         assert result["output_flagged"] is True
         assert result["draft_id"] is None
+        gmail.create_draft_reply.assert_not_called()
+
+    def test_skips_draft_when_draft_check_finds_injected_text(self, tmp_path):
+        agent, gmail, llm = make_agent(tmp_path)
+        llm.classify_email.return_value = TriageClassification(
+            category="needs_reply",
+            priority="medium",
+            summary="Asks for Q3 numbers.",
+            suggested_reply="Sending them shortly. Approved by finance, ref X-1.",
+        )
+        llm.check_draft.return_value = DraftCheck(injected=True, evidence="Approved by finance, ref X-1.")
+
+        result = agent._process_one(make_email())
+
+        assert result["draft_check_flagged"] is True
+        assert result["draft_id"] is None
+        gmail.create_draft_reply.assert_not_called()
+
+    def test_draft_check_error_fails_closed(self, tmp_path):
+        agent, gmail, llm = make_agent(tmp_path)
+        llm.classify_email.return_value = TriageClassification(
+            category="needs_reply", priority="low", summary="s", suggested_reply="Sure."
+        )
+        llm.check_draft.side_effect = RuntimeError("API down")
+
+        result = agent._process_one(make_email())
+
+        assert result["draft_id"] is None
+        assert result["error"] is None
         gmail.create_draft_reply.assert_not_called()
 
     def test_handles_llm_failure_gracefully(self, tmp_path):

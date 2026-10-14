@@ -30,6 +30,9 @@ class TriageResult(TypedDict):
     injection_flagged: bool
     # True when the model's draft itself tripped the injection screen.
     output_flagged: bool
+    # True when the second-opinion draft check found injected text (or
+    # could not run, which also blocks the draft).
+    draft_check_flagged: bool
     error: str | None
 
 
@@ -89,11 +92,13 @@ class TriageAgent:
                 draft_id=None,
                 injection_flagged=sanitized.flagged,
                 output_flagged=False,
+                draft_check_flagged=False,
                 error=str(exc),
             )
 
         draft_id = None
         output_flagged = False
+        draft_check_flagged = False
         if classification.category == "needs_reply" and classification.suggested_reply:
             # The model's draft is screened too: an injection the input
             # screen missed can still show up in what the model wrote.
@@ -105,6 +110,8 @@ class TriageAgent:
                 self.audit.log("draft_skipped", message_id=email.id, reason="injection_flagged")
             elif output_flagged:
                 self.audit.log("draft_skipped", message_id=email.id, reason="output_flagged")
+            elif self._draft_check_flags(email, sanitized.text, classification.suggested_reply):
+                draft_check_flagged = True
             else:
                 draft_id = self.gmail.create_draft_reply(
                     thread_id=email.thread_id,
@@ -119,8 +126,27 @@ class TriageAgent:
             draft_id=draft_id,
             injection_flagged=sanitized.flagged,
             output_flagged=output_flagged,
+            draft_check_flagged=draft_check_flagged,
             error=None,
         )
+
+    def _draft_check_flags(self, email: EmailMessage, body: str, draft: str) -> bool:
+        """Ask a second, narrowly-scoped LLM call whether the draft carries
+        text the email smuggled in. Fails closed: if the check can't run,
+        no draft is saved and the email is left for a human."""
+        try:
+            check = self.llm.check_draft(
+                sender=email.sender, subject=email.subject, body=body, draft=draft
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed, never crash the run
+            self.audit.log("draft_skipped", message_id=email.id, reason="draft_check_error", error=str(exc))
+            return True
+        if check.injected:
+            self.audit.log(
+                "draft_skipped", message_id=email.id, reason="draft_check_flagged", evidence=check.evidence
+            )
+            return True
+        return False
 
     def build_graph(self):
         graph = StateGraph(AgentState)
