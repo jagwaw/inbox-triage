@@ -10,3 +10,6 @@ audit_logs/*.jsonl
 credentials.json
 token.json
 .DS_Store
+
+# Private notes (never commit)
+*.local.md
