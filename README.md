@@ -33,10 +33,13 @@ This project exists to answer a specific question honestly: *what does it
 look like to give an AI agent access to someone's inbox without that being
 reckless?* Four things, all present in the code, not just described here:
 
-- **No send permission, at the OAuth layer.** The Gmail client requests
-  `gmail.readonly` + `gmail.compose` — never `gmail.send` or full mail
-  access. The agent is *structurally* incapable of sending email, not just
-  told not to. See [`gmail_client.py`](src/inbox_triage/gmail_client.py).
+- **Draft-only by design.** The Gmail client has no send method — it only
+  ever calls the draft-create endpoint. One honest caveat: Gmail has no
+  draft-only OAuth scope (`gmail.compose`, the narrowest one that allows
+  drafts, can also send), so "never sends" is enforced in code and by the
+  approval gate, not by the token itself. A production deployment would
+  put a narrower service or allow-listed proxy between the agent and
+  Gmail. See [`gmail_client.py`](src/inbox_triage/gmail_client.py).
 - **A human-approval gate that can't be turned off.** `REQUIRE_HUMAN_APPROVAL=false`
   is refused at startup with a `ConfigError` — not a silently-ignored
   setting. See [`config.py`](src/inbox_triage/config.py).

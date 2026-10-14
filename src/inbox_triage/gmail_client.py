@@ -2,10 +2,10 @@
 
 Security posture (see README "Guardrails" section for the full writeup):
 
-- OAuth scope is `gmail.modify` at most (read + create drafts + label),
-  NEVER `gmail.send` or `mail.google.com` (full access). The agent
-  physically cannot send mail with the token this client requests, even
-  if a bug in the agent logic tried to.
+- OAuth scopes are `gmail.readonly` + `gmail.compose`. Gmail has no
+  draft-only scope, and `gmail.compose` can also send, so "never sends"
+  is enforced by this class exposing no send method (plus the approval
+  gate), not by the token itself.
 - Token is cached to a local, gitignored file and refreshed silently;
   it's never logged or printed.
 - Every fetch and every draft creation goes through AuditLogger.
@@ -25,8 +25,9 @@ from googleapiclient.discovery import build
 
 from .guardrails import AuditLogger
 
-# Intentionally excludes gmail.send: this agent can read mail and create
-# drafts, and that's all. A human must open Gmail and press send.
+# Narrowest scopes that allow reading mail and creating drafts.
+# gmail.compose technically also permits sending; this class simply never
+# exposes a send method, and a human presses send in Gmail.
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
