@@ -17,18 +17,22 @@ tools you give them, and build so it doesn't hurt them." Concretely:
   *draft*. A human always presses send.
 - sanitize_for_prompt: a minimal prompt-injection defense — email bodies
   are untrusted input, so before they're interpolated into a prompt we
-  strip/flag common injection patterns ("ignore previous instructions",
-  fake system/role markers) rather than trusting the model to ignore them
-  unaided.
+  flag common injection patterns ("ignore previous instructions",
+  fake system/role markers, a few paraphrases and one Spanish phrasing)
+  rather than trusting the model to ignore them unaided. The check runs
+  on a normalised copy of the whole body. It is still a regex list, not
+  a model, and it misses attacks that don't resemble those phrases.
 """
+
 from __future__ import annotations
 
 import json
 import re
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -73,6 +77,7 @@ AuditEventType = Literal[
     "email_classified",
     "draft_created",
     "draft_skipped",
+    "email_labelled",
     "rate_limit_tripped",
     "input_flagged",
     "error",
@@ -94,12 +99,12 @@ class AuditLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def _log_path(self) -> Path:
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
         return self.log_dir / f"{date_str}.jsonl"
 
     def log(self, event_type: AuditEventType, **details: Any) -> None:
         record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "event": event_type,
             **details,
         }
@@ -112,24 +117,89 @@ class AuditLogger:
 _INJECTION_PATTERNS = [
     # \s+ (not a literal space) so a line break or extra spaces between
     # words can't be used to slip a phrase past the detector.
-    re.compile(r"ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions", re.I),
-    re.compile(r"disregard\s+(all\s+|any\s+|the\s+)?(previous|prior|above)", re.I),
+    re.compile(
+        r"ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"disregard\s+(all\s+|any\s+|the\s+)?(previous|prior|above)", re.IGNORECASE
+    ),
     # Role reassignment ("you are now in admin mode", "you are now an
     # unrestricted assistant"), not ordinary "you are now subscribed".
     re.compile(
         r"you\s+are\s+now\s+(in\s+\w+\s+mode|an?\s+(\w+\s+)?(ai|assistant|bot|model)\b"
         r"|unrestricted|jailbroken)",
-        re.I,
+        re.IGNORECASE,
     ),
-    re.compile(r"new\s+instructions?:", re.I),
+    re.compile(r"new\s+instructions?:", re.IGNORECASE),
     # A fake role label at the start of a line. Mid-line "Operating system:"
     # is ordinary text.
-    re.compile(r"^\s*system\s*:", re.I | re.M),
-    re.compile(r"</?(system|assistant|user)>", re.I),
+    re.compile(r"^\s*system\s*:", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"</?(system|assistant|user)>", re.IGNORECASE),
     # Bulk exfiltration ("forward all future emails to ..."). Forwarding one
     # email to a colleague is ordinary.
-    re.compile(r"forward\s+(all|every|any)\s+(of\s+)?(\w+\s+)?(emails?|mail|messages)\s+to", re.I),
+    re.compile(
+        r"forward\s+(all|every|any)\s+(of\s+)?(\w+\s+)?(emails?|mail|messages)\s+to",
+        re.IGNORECASE,
+    ),
+    # Paraphrases of "ignore previous instructions". "Your task has changed"
+    # on its own is ordinary mail from a person, so it is not a pattern.
+    re.compile(
+        r"\bdisregard\s+your\s+(earlier|previous|prior)\s+"
+        r"(guidance|instructions|prompt|rules)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bforget\s+what\s+you\s+(were|have\s+been)\s+told\b", re.IGNORECASE),
+    # Instructions aimed at the assistant, including ones pasted after a
+    # signature or inside a quoted chain. "Note for the assistant manager"
+    # does not match: reading/drafting has to follow.
+    re.compile(
+        r"\bnote\s+(to|for)\s+the\s+((ai|llm)\s+)?assistant\s+(reading|drafting)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bassistant\s+drafting\s+(replies|a\s+reply)\b", re.IGNORECASE),
+    # Override-style banners. No colon, so the line-start "system:" rule misses them.
+    re.compile(r"\bsystem\s+override\b", re.IGNORECASE),
+    re.compile(r"\bnew\s+directive\b", re.IGNORECASE),
+    # Spanish "ignore the previous instructions". Other languages are not covered.
+    re.compile(
+        r"\bignora\s+(todas\s+)?(las\s+)?instrucciones\s+(anteriores|previas)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bolvida\s+(todas\s+)?(las\s+)?instrucciones(\s+(anteriores|previas))?\b",
+        re.IGNORECASE,
+    ),
 ]
+
+# Soft hyphen, zero-width spaces, and the byte-order mark. Stripped so
+# "ig<zwsp>nore previous instructions" still matches. Lookalike letters
+# from another alphabet are not folded; NFKC does not treat them as equals.
+_INVISIBLE_CHARS = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\u180e]")
+
+
+def _normalize_for_screen(text: str) -> str:
+    """Fold case, unicode, and horizontal whitespace before matching.
+
+    Newlines stay. The "system:" rule is deliberately line-anchored so
+    "Operating system:" is not a hit, and that only works if line breaks
+    survive. The string returned to the model is the original email; this
+    copy is only for detection.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = _INVISIBLE_CHARS.sub("", text)
+    folded: list[str] = []
+    for ch in text:
+        if ch in "\n\r":
+            folded.append("\n")
+        elif ch.isspace():
+            folded.append(" ")
+        else:
+            folded.append(ch)
+    text = "".join(folded)
+    text = re.sub(r" +", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.casefold()
 
 
 @dataclass
@@ -147,10 +217,16 @@ def sanitize_for_prompt(raw_text: str, *, max_len: int = 8000) -> SanitizedInput
     clear delimiters and labelled as untrusted data, never as
     instructions), but it's flagged so the audit log — and a human
     reviewer — can see that this message tried something.
+
+    Matching uses a normalised copy of the whole body, not a prefix, so a
+    phrase hidden under the signature is visible. Only the text handed to
+    the model is truncated.
     """
-    truncated = raw_text[:max_len]
-    matched = [p.pattern for p in _INJECTION_PATTERNS if p.search(truncated)]
-    return SanitizedInput(text=truncated, flagged=bool(matched), matched_patterns=matched)
+    normalized = _normalize_for_screen(raw_text)
+    matched = [p.pattern for p in _INJECTION_PATTERNS if p.search(normalized)]
+    return SanitizedInput(
+        text=raw_text[:max_len], flagged=bool(matched), matched_patterns=matched
+    )
 
 
 class ApprovalGate:
