@@ -7,6 +7,7 @@ through the RateLimiter — this is the one chokepoint all LLM spend passes
 through, so the cap in guardrails.py is actually enforced rather than
 aspirational.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +30,9 @@ def _is_transient(exc: BaseException) -> bool:
     return type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
 
 
-_RETRY = dict(
+# Keyword form, not a literal: a dict[str, object] literal does not match
+# tenacity.retry's keyword parameters under mypy.
+_RETRY = dict(  # noqa: C408
     retry=retry_if_exception(_is_transient),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=20),
@@ -81,7 +84,8 @@ class DraftCheck(BaseModel):
         description="True if the draft contains text the email tried to get an assistant to write"
     )
     evidence: str | None = Field(
-        default=None, description="The offending text from the draft, if injected is true"
+        default=None,
+        description="The offending text from the draft, if injected is true",
     )
 
 
@@ -136,11 +140,16 @@ class LLMClient:
             )
 
         return self._structured_call(
-            self._system_prompt(), user_content, TriageClassification,
-            tool_name="submit_classification", description="Submit the email triage classification.",
+            self._system_prompt(),
+            user_content,
+            TriageClassification,
+            tool_name="submit_classification",
+            description="Submit the email triage classification.",
         )
 
-    def check_draft(self, *, sender: str, subject: str, body: str, draft: str) -> DraftCheck:
+    def check_draft(
+        self, *, sender: str, subject: str, body: str, draft: str
+    ) -> DraftCheck:
         """Second opinion before a draft is saved: did the email smuggle
         text into it? A separate call with its own narrow job, so it isn't
         working against whatever the email did to the drafting call."""
@@ -152,17 +161,37 @@ class LLMClient:
             f"--- BEGIN DRAFT REPLY ---\n{draft}\n--- END DRAFT REPLY ---"
         )
         return self._structured_call(
-            DRAFT_CHECK_SYSTEM_PROMPT, user_content, DraftCheck,
-            tool_name="submit_draft_check", description="Submit the draft safety check.",
+            DRAFT_CHECK_SYSTEM_PROMPT,
+            user_content,
+            DraftCheck,
+            tool_name="submit_draft_check",
+            description="Submit the draft safety check.",
         )
 
-    def _structured_call(self, system: str, user_content: str, model: type[T], *, tool_name: str, description: str) -> T:
+    def _structured_call(
+        self,
+        system: str,
+        user_content: str,
+        model: type[T],
+        *,
+        tool_name: str,
+        description: str,
+    ) -> T:
         if self.settings.llm_provider == "anthropic":
-            return self._call_anthropic(system, user_content, model, tool_name, description)
+            return self._call_anthropic(
+                system, user_content, model, tool_name, description
+            )
         return self._call_openai(system, user_content, model)
 
     @retry(**_RETRY)
-    def _call_anthropic(self, system: str, user_content: str, model: type[T], tool_name: str, description: str) -> T:
+    def _call_anthropic(
+        self,
+        system: str,
+        user_content: str,
+        model: type[T],
+        tool_name: str,
+        description: str,
+    ) -> T:
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)

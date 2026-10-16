@@ -5,10 +5,11 @@ local .env via python-dotenv, which is gitignored). Nothing here is ever
 hardcoded, and the config is validated eagerly so a missing key fails at
 startup rather than mid-run.
 """
+
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -66,7 +67,9 @@ class Settings:
                 f"LLM_PROVIDER must be 'anthropic' or 'openai', got {self.llm_provider!r}"
             )
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
-            raise ConfigError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic")
+            raise ConfigError(
+                "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic"
+            )
         if self.llm_provider == "openai" and not self.openai_api_key:
             raise ConfigError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
         if self.max_llm_calls_per_hour <= 0:
@@ -89,7 +92,9 @@ def load_settings() -> Settings:
         llm_model=os.getenv("LLM_MODEL", "claude-sonnet-5"),
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
-        gmail_credentials_path=Path(os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json")),
+        gmail_credentials_path=Path(
+            os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json")
+        ),
         gmail_token_path=Path(os.getenv("GMAIL_TOKEN_PATH", "token.json")),
         max_llm_calls_per_hour=_env_int("MAX_LLM_CALLS_PER_HOUR", 100),
         max_emails_per_run=_env_int("MAX_EMAILS_PER_RUN", 25),

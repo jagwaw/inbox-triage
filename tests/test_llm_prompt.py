@@ -27,7 +27,9 @@ def test_draft_check_is_rate_limited_and_marks_email_as_untrusted(monkeypatch):
 
     calls = []
     limiter = SimpleNamespace(check_and_record=lambda: calls.append("limit"))
-    client = LLMClient(settings=SimpleNamespace(llm_provider="openai"), rate_limiter=limiter)
+    client = LLMClient(
+        settings=SimpleNamespace(llm_provider="openai"), rate_limiter=limiter
+    )
     seen = {}
 
     def fake_call(system, user_content, model):

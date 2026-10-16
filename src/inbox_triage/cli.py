@@ -8,6 +8,7 @@ Nothing here loops or schedules itself — running this on a cadence (cron,
 a scheduled task, etc.) is a deliberate choice left to the operator, not
 something the agent does to itself.
 """
+
 from __future__ import annotations
 
 import sys
@@ -38,7 +39,9 @@ def main() -> int:
         c = r["classification"]
         flag = " [INJECTION FLAGGED]" if r["injection_flagged"] else ""
         draft_note = f" -> draft {r['draft_id']} created" if r["draft_id"] else ""
-        print(f"  [{c.priority.upper():6}] {c.category:20} {email.subject!r}{flag}{draft_note}")
+        print(
+            f"  [{c.priority.upper():6}] {c.category:20} {email.subject!r}{flag}{draft_note}"
+        )
         print(f"           {c.summary}")
 
     print(f"\nAudit log written to: {settings.audit_log_dir}/")
