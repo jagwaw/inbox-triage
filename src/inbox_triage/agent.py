@@ -10,10 +10,11 @@ not bolted on" looks like in code: the guardrails aren't a wrapper around
 the agent, they're nodes IN the graph, so there's no path through the
 graph that skips them.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from dataclasses import dataclass
+from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -86,6 +87,10 @@ class TriageAgent:
             )
         except Exception as exc:  # noqa: BLE001 - a triage failure shouldn't crash the run
             self.audit.log("error", message_id=email.id, error=str(exc))
+            # A flagged email is done: retrying it would keep sending the
+            # attack to the model. An ordinary failure stays unlabelled.
+            if sanitized.flagged:
+                self._mark_triaged(email)
             return TriageResult(
                 email=email,
                 classification=None,
@@ -99,6 +104,7 @@ class TriageAgent:
         draft_id = None
         output_flagged = False
         draft_check_flagged = False
+        draft_check_error = False
         if classification.category == "needs_reply" and classification.suggested_reply:
             # The model's draft is screened too: an injection the input
             # screen missed can still show up in what the model wrote.
@@ -107,18 +113,33 @@ class TriageAgent:
             # the injection screen, even if the model still tried to comply.
             # A human should look at these by hand.
             if sanitized.flagged:
-                self.audit.log("draft_skipped", message_id=email.id, reason="injection_flagged")
-            elif output_flagged:
-                self.audit.log("draft_skipped", message_id=email.id, reason="output_flagged")
-            elif self._draft_check_flags(email, sanitized.text, classification.suggested_reply):
-                draft_check_flagged = True
-            else:
-                draft_id = self.gmail.create_draft_reply(
-                    thread_id=email.thread_id,
-                    to=email.sender,
-                    subject=f"Re: {email.subject}",
-                    body_text=classification.suggested_reply,
+                self.audit.log(
+                    "draft_skipped", message_id=email.id, reason="injection_flagged"
                 )
+            elif output_flagged:
+                self.audit.log(
+                    "draft_skipped", message_id=email.id, reason="output_flagged"
+                )
+            else:
+                outcome = self._draft_check_flags(
+                    email, sanitized.text, classification.suggested_reply
+                )
+                if outcome == "clear":
+                    draft_id = self.gmail.create_draft_reply(
+                        thread_id=email.thread_id,
+                        to=email.sender,
+                        subject=f"Re: {email.subject}",
+                        body_text=classification.suggested_reply,
+                    )
+                else:
+                    draft_check_flagged = True
+                    draft_check_error = outcome == "error"
+
+        # Label when handling finished: a draft was saved, the email was
+        # flagged, or there was nothing to draft. A draft-check outage stays
+        # unlabelled so the next run can try again.
+        if not draft_check_error:
+            self._mark_triaged(email)
 
         return TriageResult(
             email=email,
@@ -130,7 +151,19 @@ class TriageAgent:
             error=None,
         )
 
-    def _draft_check_flags(self, email: EmailMessage, body: str, draft: str) -> bool:
+    def _mark_triaged(self, email: EmailMessage) -> None:
+        try:
+            self.gmail.apply_triaged_label(email.id)
+        except Exception as exc:  # noqa: BLE001 - a label failure must not abort the run
+            self.audit.log(
+                "error",
+                message_id=email.id,
+                error=f"could not apply triaged label: {exc}",
+            )
+
+    def _draft_check_flags(
+        self, email: EmailMessage, body: str, draft: str
+    ) -> Literal["clear", "injected", "error"]:
         """Ask a second, narrowly-scoped LLM call whether the draft carries
         text the email smuggled in. Fails closed: if the check can't run,
         no draft is saved and the email is left for a human."""
@@ -139,14 +172,22 @@ class TriageAgent:
                 sender=email.sender, subject=email.subject, body=body, draft=draft
             )
         except Exception as exc:  # noqa: BLE001 - fail closed, never crash the run
-            self.audit.log("draft_skipped", message_id=email.id, reason="draft_check_error", error=str(exc))
-            return True
+            self.audit.log(
+                "draft_skipped",
+                message_id=email.id,
+                reason="draft_check_error",
+                error=str(exc),
+            )
+            return "error"
         if check.injected:
             self.audit.log(
-                "draft_skipped", message_id=email.id, reason="draft_check_flagged", evidence=check.evidence
+                "draft_skipped",
+                message_id=email.id,
+                reason="draft_check_flagged",
+                evidence=check.evidence,
             )
-            return True
-        return False
+            return "injected"
+        return "clear"
 
     def build_graph(self):
         graph = StateGraph(AgentState)

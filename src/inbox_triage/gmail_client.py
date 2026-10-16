@@ -2,14 +2,17 @@
 
 Security posture (see README "Guardrails" section for the full writeup):
 
-- OAuth scopes are `gmail.readonly` + `gmail.compose`. Gmail has no
-  draft-only scope, and `gmail.compose` can also send, so "never sends"
-  is enforced by this class exposing no send method (plus the approval
-  gate), not by the token itself.
+- OAuth scopes are `gmail.readonly` + `gmail.compose` + `gmail.modify`.
+  Gmail has no draft-only scope, and `gmail.compose` can also send.
+  `gmail.modify` is here only so a processed message can be labelled
+  `triaged`; that scope can also trash mail. "Never sends" and "never
+  deletes" are enforced by this class exposing no send, trash, or delete
+  method (plus the approval gate), not by the token itself.
 - Token is cached to a local, gitignored file and refreshed silently;
   it's never logged or printed.
 - Every fetch and every draft creation goes through AuditLogger.
 """
+
 from __future__ import annotations
 
 import base64
@@ -25,13 +28,16 @@ from googleapiclient.discovery import build
 
 from .guardrails import AuditLogger
 
-# Narrowest scopes that allow reading mail and creating drafts.
-# gmail.compose technically also permits sending; this class simply never
-# exposes a send method, and a human presses send in Gmail.
+# gmail.compose can also send. gmail.modify can also trash. This class
+# never exposes send, trash, or delete; a human presses send in Gmail.
+# modify is required to create the "triaged" label and apply it.
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.modify",
 ]
+
+TRIAGED_LABEL = "triaged"
 
 
 @dataclass
@@ -55,6 +61,7 @@ class GmailClient:
         self._token_path = token_path
         self._audit = audit_logger
         self._service = None
+        self._triaged_label_id: str | None = None
 
     def _get_credentials(self) -> Credentials:
         creds: Credentials | None = None
@@ -86,19 +93,24 @@ class GmailClient:
             self._service = build("gmail", "v1", credentials=creds)
         return self._service
 
-    def fetch_unread(self, max_results: int, query: str | None = None) -> list[EmailMessage]:
+    def fetch_unread(
+        self, max_results: int, query: str | None = None
+    ) -> list[EmailMessage]:
         service = self._get_service()
         list_args: dict[str, Any] = {
             "userId": "me",
             "labelIds": ["INBOX", "UNREAD"],
             "maxResults": max_results,
+            # Gmail drops already-labelled mail. The id check below is a
+            # second guard for a list call that still returns one.
+            "q": _exclude_triaged(query),
         }
-        if query:
-            list_args["q"] = query
         resp = service.users().messages().list(**list_args).execute()
-        message_refs = resp.get("messages", [])
+        message_refs = resp.get("messages", []) if isinstance(resp, dict) else []
 
+        triaged_id = self._lookup_triaged_label_id()
         messages: list[EmailMessage] = []
+        skipped: list[str] = []
         for ref in message_refs:
             full = (
                 service.users()
@@ -106,14 +118,64 @@ class GmailClient:
                 .get(userId="me", id=ref["id"], format="full")
                 .execute()
             )
+            if triaged_id and triaged_id in full.get("labelIds", []):
+                skipped.append(full["id"])
+                continue
             messages.append(self._parse_message(full))
 
-        self._audit.log(
-            "email_fetched",
-            count=len(messages),
-            message_ids=[m.id for m in messages],
-        )
+        details: dict[str, Any] = {
+            "count": len(messages),
+            "message_ids": [m.id for m in messages],
+        }
+        if skipped:
+            details["skipped_triaged"] = skipped
+        self._audit.log("email_fetched", **details)
         return messages
+
+    def apply_triaged_label(self, message_id: str) -> None:
+        """Mark a message handled. Creates the label the first time."""
+        service = self._get_service()
+        label_id = self._ensure_triaged_label_id()
+        service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"addLabelIds": [label_id]},
+        ).execute()
+        self._audit.log("email_labelled", message_id=message_id, label=TRIAGED_LABEL)
+
+    def _lookup_triaged_label_id(self) -> str | None:
+        if self._triaged_label_id:
+            return self._triaged_label_id
+        service = self._get_service()
+        resp = service.users().labels().list(userId="me").execute()
+        if not isinstance(resp, dict):
+            return None
+        for label in resp.get("labels", []):
+            if isinstance(label, dict) and label.get("name") == TRIAGED_LABEL:
+                self._triaged_label_id = str(label["id"])
+                return self._triaged_label_id
+        return None
+
+    def _ensure_triaged_label_id(self) -> str:
+        found = self._lookup_triaged_label_id()
+        if found:
+            return found
+        service = self._get_service()
+        created = (
+            service.users()
+            .labels()
+            .create(
+                userId="me",
+                body={
+                    "name": TRIAGED_LABEL,
+                    "labelListVisibility": "labelShow",
+                    "messageListVisibility": "show",
+                },
+            )
+            .execute()
+        )
+        self._triaged_label_id = str(created["id"])
+        return self._triaged_label_id
 
     @staticmethod
     def _parse_message(raw: dict[str, Any]) -> EmailMessage:
@@ -130,7 +192,9 @@ class GmailClient:
 
     @staticmethod
     def _extract_body(payload: dict[str, Any]) -> str:
-        if payload.get("mimeType") == "text/plain" and "data" in payload.get("body", {}):
+        if payload.get("mimeType") == "text/plain" and "data" in payload.get(
+            "body", {}
+        ):
             return base64.urlsafe_b64decode(payload["body"]["data"]).decode(
                 "utf-8", errors="replace"
             )
@@ -140,7 +204,9 @@ class GmailClient:
                 return body
         return ""
 
-    def create_draft_reply(self, thread_id: str, to: str, subject: str, body_text: str) -> str:
+    def create_draft_reply(
+        self, thread_id: str, to: str, subject: str, body_text: str
+    ) -> str:
         """Create a Gmail draft. Does NOT send. Returns the draft id."""
         service = self._get_service()
         message = MIMEText(body_text)
@@ -166,3 +232,12 @@ class GmailClient:
             subject=subject,
         )
         return draft_id
+
+
+def _exclude_triaged(query: str | None) -> str:
+    exclusion = f"-label:{TRIAGED_LABEL}"
+    if not query:
+        return exclusion
+    if exclusion in query:
+        return query
+    return f"({query}) {exclusion}"
